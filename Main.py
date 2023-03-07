@@ -526,6 +526,10 @@ class FunctionUpdateRoles(Function):
             value = arguments[key]
             
             if isinstance(value, str):
+                role = self.get_role(value)
+                if role:
+                    exec(f"self.{key}.append(role)")
+                    continue
                 value = self.evaluate(value)
 
             if isinstance(value, list):
