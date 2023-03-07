@@ -1,9 +1,10 @@
-import discord, os, glob, re, json, types
+import discord, os, glob, re, json
 from typing import Any
 from discord.ext import tasks
 from dotenv import load_dotenv
 from ruamel.yaml import YAML, constructor
 from datetime import datetime, timedelta, timezone
+from emoji import UNICODE_EMOJI
 
 
 
@@ -388,7 +389,26 @@ class Function:
         if id in yaml_variables: return self.get_colour(eval(id))
         return None
 
-    
+    def get_emoji(self, id: int | str) -> discord.Emoji | str:
+        if not id: return None
+        emoji = None
+
+        if isinstance(id, str):
+            if id in UNICODE_EMOJI: return id
+            name = re.match(r":(.+):", id).group(0)
+            if name: id = name
+
+        for guild in [self.guild] + client.guilds:
+            if not guild: continue
+            if isinstance(id, int):
+                emoji = discord.utils.get(guild.emojis, id=id)
+            elif isinstance(id, int):        
+                emoji = discord.utils.get(guild.emojis, name=id)
+            else: break
+            if emoji: return emoji
+
+
+
     async def get_server(self, id: int | str) -> Guild:
         if not id: return None
 
@@ -949,9 +969,9 @@ class VeiwGenerator:
 
             args = {}
             for key in ["label", "value", "description", "emoji", "default"]:
-                if key in option:
-                    args[key] = option[key]
+                if key in option: args[key] = option[key]
 
+            if "emoji" in args: args["emoji"] = Function().get_emoji(args["emoji"])
             select.add_option(**args)
         
         for param in ["placeholder", "min values", "max values"]:
