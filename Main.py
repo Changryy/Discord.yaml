@@ -467,7 +467,7 @@ class FunctionRoles(Function):
             value = arguments[key]
             # if instance is string evaluate it
             if isinstance(value, str):
-                role = self.get_role(role_id)
+                role = self.get_role(value)
                 if role:
                     self.roles.append(role)
                     continue
