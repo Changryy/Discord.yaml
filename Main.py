@@ -4,7 +4,7 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 from ruamel.yaml import YAML, constructor
 from datetime import datetime, timedelta, timezone
-from emoji import UNICODE_EMOJI
+import emoji as emojilib
 
 
 
@@ -394,7 +394,7 @@ class Function:
         emoji = None
 
         if isinstance(id, str):
-            if id in UNICODE_EMOJI: return id
+            if emojilib.is_emoji(id): return id
             name = re.match(r":(.+):", id).group(0)
             if name: id = name
 
