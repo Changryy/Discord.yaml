@@ -464,16 +464,21 @@ class FunctionRoles(Function):
         for key in ["role", "roles"]:
             if key not in arguments: continue
 
+            value = arguments[key]
             # if instance is string evaluate it
-            if isinstance(arguments[key], str):
-                arguments[key] = self.evaluate(arguments[key])
+            if isinstance(value, str):
+                role = self.get_role(role_id)
+                if role:
+                    self.roles.append(role)
+                    continue
+                value = self.evaluate(value)
 
-            if isinstance(arguments[key], list):
-                for role_id in arguments[key]:
+            if isinstance(value, list):
+                for role_id in value:
                     role = self.get_role(role_id)
                     if role: self.roles.append(role)
             else:
-                role = self.get_role(arguments[key])
+                role = self.get_role(value)
                 if role: self.roles.append(role)
         
         self.reason = arguments.get("reason", None)
