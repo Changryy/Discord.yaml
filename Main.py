@@ -404,7 +404,7 @@ class Function:
             if not guild: continue
             if isinstance(id, int):
                 emoji = discord.utils.get(guild.emojis, id=id)
-            elif isinstance(id, int):        
+            elif isinstance(id, str):        
                 emoji = discord.utils.get(guild.emojis, name=id)
             else: break
             if emoji: return emoji
@@ -746,8 +746,7 @@ class FunctionMessage(Function):
             if content_type not in content_count: content_count[content_type] = 1
             else:
                 content_count[content_type] += 1
-                trace += " " + content_count[content_name]
-
+                trace += " " + str(content_count[content_name])
 
             match content_type:
                 case "text": self.content = self.evaluate_string(item["text"])
@@ -989,7 +988,8 @@ class VeiwGenerator:
             for key in ["label", "value", "description", "emoji", "default"]:
                 if key in option: args[key] = option[key]
 
-            if "emoji" in args: args["emoji"] = Function().get_emoji(args["emoji"])
+            if "emoji" in args:
+                args["emoji"] = Function(guild=self.guild).get_emoji(args["emoji"])
             select.add_option(**args)
         
         for param in ["placeholder", "min values", "max values"]:
