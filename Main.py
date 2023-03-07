@@ -276,7 +276,8 @@ class Function:
         if not isinstance(raw_function, dict): raise TypeError(f"Function must be dictionary.\n{raw_function}")
         self.channel = channel
         self.user = user
-        self.guild = Guild(guild)
+        if guild: self.guild = Guild(guild)
+        elif isinstance(user, discord.Member): self.guild = Guild(user.guild)
         self.raw_function = raw_function
         self.function_name = list(raw_function.keys())[0]
         self.execution_path = execution_path + " -> " + self.function_name
@@ -514,11 +515,14 @@ class FunctionUpdateRoles(Function):
         self.remove = []
         self.reason = None
 
-        if not self.guild: return
+        await super().find_arguments(arguments)
         
         self.target = await self.get_user(arguments.get("target", None))
         if not self.target:
-            if not isinstance(self.user, discord.Member): return
+            if not isinstance(self.user, discord.Member):
+                if self.user and self.guild:
+                    self.user = self.guild.get_member(self.user.id)
+                else: return
             self.target = self.user
 
         for key in ["add", "remove"]:
@@ -1019,7 +1023,7 @@ async def check_timers() -> None:
             server = await func.get_server(timer.get("guild"))
             channel = await func.get_channel(timer.get("channel"))
 
-            await run_code("do", channel, user, server, timer, timer["func"])
+            await run_code("do", channel, user, server, timer, timer["func"] + " -> ")
     
     save_data.remove_timers(executed_timers)
 
