@@ -289,7 +289,6 @@ class Function:
             case "add_role" | "add_roles": self.__class__ = FunctionAddRoles
             case "remove_role" | "remove_roles": self.__class__ = FunctionRemoveRoles
             case "set_variable" | "set_variables": self.__class__ = FunctionSetVariable
-            case "remove_role" | "remove_roles": self.__class__ = FunctionRemoveRoles
             case "update_roles": self.__class__ = FunctionUpdateRoles
             case "update_message": self.__class__ = FunctionUpdateMessage
             case "send_message": self.__class__ = FunctionSendMessage
@@ -491,14 +490,20 @@ class FunctionRoles(Function):
             value = arguments[key]
             # if instance is string evaluate it
             if isinstance(value, str):
-                role = self.get_role(value)
-                if role:
-                    self.roles.append(role)
-                    continue
-                value = self.evaluate(value)
+                try:
+                    value = int(value)
+                except:
+                    role = self.get_role(value)
+                    if role:
+                        self.roles.append(role)
+                        continue
+                    value = self.evaluate(value)
 
             if isinstance(value, list):
                 for role_id in value:
+                    try:
+                        role_id = int(role_id)
+                    except: pass
                     role = self.get_role(role_id)
                     if role: self.roles.append(role)
             else:
@@ -553,14 +558,20 @@ class FunctionUpdateRoles(Function):
             value = arguments[key]
             
             if isinstance(value, str):
-                role = self.get_role(value)
-                if role:
-                    exec(f"self.{key}.append(role)")
-                    continue
-                value = self.evaluate(value)
+                try:
+                    value = int(value)
+                except:
+                    role = self.get_role(value)
+                    if role:
+                        exec(f"self.{key}.append(role)")
+                        continue
+                    value = self.evaluate(value)
 
             if isinstance(value, list):
                 for role_id in value:
+                    try:
+                        role_id = int(role_id)
+                    except: pass
                     role = self.get_role(role_id)
                     if role: exec(f"self.{key}.append(role)")
             else:
@@ -569,16 +580,18 @@ class FunctionUpdateRoles(Function):
         
         self.reason = arguments.get("reason", None)
 
-
     async def execute(self) -> bool:
         await super().execute()
         if not self.target: return False
 
-        remove_roles = set(self.remove) - set(self.add)
+        remove_roles: set[discord.Role] = set(self.remove) - set(self.add)
+        remove_roles.intersection_update(self.target.roles)
+        add_roles: set[discord.Role] = set(self.add) - set(self.target.roles)
+
         if remove_roles:
             await self.target.remove_roles(*remove_roles, reason=self.reason)
-        if self.add:
-            await self.target.add_roles(*self.add, reason=self.reason)
+        if add_roles:
+            await self.target.add_roles(*add_roles, reason=self.reason)
         return True
 
 class FunctionSetVariable(Function):
@@ -809,7 +822,7 @@ class FunctionResponseMessage(FunctionMessage):
         await super().find_arguments(arguments)
         self.delete_after = 15
         
-        self.response = self.additional_variables.get("response")
+        self.response = self.additional_variables.get("followup")
         if not isinstance(arguments, dict): return
 
         self.ephemeral = arguments.get("ephemeral", True)
@@ -911,6 +924,8 @@ class Interaction:
 
 
     async def interact(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        
         args = {}
         for obj in [self.item, interaction]:
             for key in dir(obj):
@@ -1017,6 +1032,7 @@ async def run_code(code_path: str, channel: discord.TextChannel = None, user: di
 
         raw_code = lookup[code_path_variant]
         if isinstance(raw_code, dict): raw_code = [raw_code]
+        if not raw_code: return
 
         functions: dict[str, int] = {}
 
