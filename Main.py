@@ -64,7 +64,7 @@ if not yaml_files:
 
 for path in yaml_files:
     try:
-        with open(path) as f:
+        with open(path, encoding="utf8") as f:
             yaml = YAML(typ="safe").load(f)
     except constructor.DuplicateKeyError: # Top notch error handling
         raise constructor.DuplicateKeyError("Duplicate keys are not supported.")
@@ -395,10 +395,13 @@ class Function:
 
         if isinstance(id, str):
             if emojilib.is_emoji(id): return id
-            name = re.match(r":(.+):", id).group(0)
-            if name: id = name
+            name = re.match(r":(.+):", id)
+            if name: id = name.group(1)
 
-        for guild in [self.guild] + client.guilds:
+        guilds = [self.guild]
+        guilds += client.guilds
+
+        for guild in guilds:
             if not guild: continue
             if isinstance(id, int):
                 emoji = discord.utils.get(guild.emojis, id=id)
