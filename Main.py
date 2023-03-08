@@ -351,7 +351,7 @@ class Function:
                 return self.get_role(eval(var))
             if id.startswith("@"): id = id[1:]
         
-        if not self.guild:
+        if not self.guild and self.user:
             for guild in self.user.mutual_guilds:
                 if isinstance(id, int): return guild.get_role(id)
                 for role in guild.roles:
@@ -430,14 +430,18 @@ class Function:
         
         return None
 
-    def evaluate(self, _string: str) -> Any:
+    def evaluate(self, _string: str, **kwargs) -> Any:
         if not _string: return _string
 
-        for _key in self.__dict__:
-            exec(f"{_key} = self.{_key}")
-        
         for _key in self.additional_variables:
             exec(f"{_key} = self.additional_variables[{repr(_key)}]")
+
+        for _key in self.__dict__:
+            if _key == "additional_variables": continue
+            exec(f"{_key} = self.{_key}")
+        
+        for _key in kwargs:
+            exec(f"{_key} = {repr(kwargs[_key])}")
 
         try:
             return eval(_string)
@@ -454,6 +458,11 @@ class Function:
             return eval(f"f{repr(_string)}")
         except Exception as e: raise type(e)(f"{e}\nTrace: {self.execution_path}\n\n{_string}") from e
 
+    def evaluate_condition(self, condition: dict) -> dict:
+        if self.evaluate(condition.get("if")):
+            return condition.get("do", {"?":{}})
+        return condition.get("else", {"?":{}})
+
     async def aexec(self, code: str) -> None:
         # Make an async function with the code and `exec` it
         exec(
@@ -461,6 +470,12 @@ class Function:
             ''.join(f'\n {l}' for l in code.split('\n'))
         )
         await locals()["__exec"](self)
+
+    async def refresh(self) -> None:
+        if self.guild: self.guild = await self.get_server(self.guild.id)
+        if self.channel: self.channel = await self.get_channel(self.channel.id)
+        if self.user: self.user = await self.get_user(self.user.id)
+
 
 
 # Abstract
@@ -644,6 +659,7 @@ class FunctionMessage(Function):
     stickers = None
     suppress_embeds: bool = False
     silent: bool = False
+    has_condition: bool = False
 
     msg: discord.Message = None
 
@@ -668,33 +684,22 @@ class FunctionMessage(Function):
         elif self.embeds: args["embeds"] = self.embeds
 
         self.msg = await self.channel.send(self.content, **args)
+    
+    def get_edit_args(self) -> dict:
+        args = {}
+        if self.file: args["attachments"] = self.file
+        elif self.files: args["attachments"] = self.files
+
+        for key in ["content", "embed", "embeds", "view", "delete_after", "allowed_mentions"]:
+            if key == "embeds" and "embed" in args: continue
+            value = getattr(self, key)
+            if value: args[key] = value
+
+        return args
 
     async def edit(self):
         if not self.msg: return
-
-        files = [self.file] if self.file else self.files
-        if not files: files = []
-
-        if self.embed:
-            self.msg = await self.msg.edit(
-                content=self.content,
-                embed=self.embed,
-                attachments=files,
-                suppress=self.suppress_embeds,
-                delete_after=self.delete_after,
-                allowed_mentions=self.allowed_mentions,
-                view=self.view
-            )
-        else:
-            self.msg = await self.msg.edit(
-                content=self.content,
-                embeds=self.embeds,
-                attachments=files,
-                suppress=self.suppress_embeds,
-                delete_after=self.delete_after,
-                allowed_mentions=self.allowed_mentions,
-                view=self.view
-            )
+        self.msg = await self.msg.edit(**self.get_edit_args())
 
     def compare_to(self, msg: discord.Message) -> bool:
         if self.view: return False
@@ -720,6 +725,7 @@ class FunctionMessage(Function):
         self.stickers = None
         self.suppress_embeds = False
         self.silent = False
+        self.has_condition = False
 
         if isinstance(arguments, str):
             self.content = arguments
@@ -736,6 +742,10 @@ class FunctionMessage(Function):
         content_count: dict[str, int] = {}
 
         for item in arguments["content"]:
+            if item and isinstance(item, dict) and "condition" in item:
+                item = self.evaluate_condition(item["condition"])
+                self.has_condition = True
+            
             if not item: continue
             if not isinstance(item, dict): raise TypeError(f"Message content must be dictionaries.\nTrace: {self.execution_path} -> content -> ?\n{item}")
 
@@ -748,10 +758,12 @@ class FunctionMessage(Function):
                 content_count[content_type] += 1
                 trace += " " + str(content_count[content_name])
 
+
             match content_type:
                 case "text": self.content = self.evaluate_string(item["text"])
                 case "embed": self.embeds.append(self.create_embed(item["embed"], trace))
                 case "select": view.add_select(item[content_name], trace)
+                case "button": view.add_button(item[content_name], trace)
                 case _: raise NameError(f"'{content_name}' is not a recognised message content type.\nTrace: {self.execution_path} -> content -> ?")
 
         if self.embeds and len(self.embeds) == 1: self.embed = self.embeds.pop()
@@ -813,15 +825,18 @@ class FunctionUpdateMessage(FunctionMessage):
 class FunctionResponseMessage(FunctionMessage):
     ephemeral = True
     response: discord.InteractionResponse = None
+    followup: discord.Webhook = None
 
     async def find_arguments(self, arguments) -> None:
         self.ephemeral = True
         self.response = None
+        self.followup = None
 
         await super().find_arguments(arguments)
         self.delete_after = 15
         
-        self.response = self.additional_variables.get("followup")
+        self.response = self.additional_variables.get("response")
+        self.followup = self.additional_variables.get("followup")
         if not isinstance(arguments, dict): return
 
         self.ephemeral = arguments.get("ephemeral", True)
@@ -831,25 +846,27 @@ class FunctionResponseMessage(FunctionMessage):
     async def execute(self) -> bool:
         await super().execute()
         if not self.channel: return False
-        if not self.response: return False
-        if self.response.is_done(): return False
+        
+        use_response = self.response and not self.response.is_done()
+        if not use_response and not self.followup: return False
 
         args = {
             "tts": self.tts,
-            "delete_after": self.delete_after,
             "allowed_mentions": self.allowed_mentions,
             "suppress_embeds": self.suppress_embeds,
             "silent": self.silent,
             "ephemeral": self.ephemeral
         }
 
+        if use_response: args["delete_after"] = self.delete_after
         if self.file: args["file"] = self.file
         elif self.files: args["files"] = self.files
         if self.embed: args["embed"] = self.embed
         elif self.embeds: args["embeds"] = self.embeds
         if self.view: args["view"] = self.view
 
-        self.msg = await self.response.send_message(self.content, **args)
+        if use_response: self.msg = await self.response.send_message(self.content, **args)
+        else: self.msg = await self.followup.send(self.content, **args)
         return True
     
 
@@ -915,15 +932,32 @@ class Interaction:
     code = {}
     execution_path = ""
     item = None
+    func = None
 
-    def __init__(self, item, code: dict, trace: str) -> None:
+    def __init__(self, item, code: dict, trace: str, func = None) -> None:
         self.execution_path = trace
         self.code = code
         self.item = item
+        self.func = func
 
 
     async def interact(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer()
+        
+        functions = self.code.get("on interaction", [])
+        if not functions: functions = self.code.get("on_interaction", [])
+        if not isinstance(functions, list): raise TypeError(f"On interaction must be a list of functions.\nTrace: {self.execution_path}")
+
+        if self.func: await self.func.refresh()
+
+        defer = False
+        for func in functions:
+            for key in func:
+                if key == "defer":
+                    defer = True
+                    break
+            if defer: break
+        
+        if defer: await interaction.response.defer()
         
         args = {}
         for obj in [self.item, interaction]:
@@ -941,8 +975,13 @@ class Interaction:
             args
         )
 
-        if not interaction.response.is_done():
-            await interaction.response.send_message("Done.", ephemeral=True)
+        if interaction.response.is_done() or interaction.is_expired(): return
+        
+        if isinstance(self.func, FunctionMessage) and self.func.has_condition:
+            await self.func.find_arguments(self.func.raw_function[self.func.function_name])
+            await interaction.response.edit_message(**self.func.get_edit_args())
+        else: await interaction.response.send_message("Done.", ephemeral=True)
+
 
 
 
@@ -950,18 +989,12 @@ class Interaction:
 
 class VeiwGenerator:
     view: discord.ui.View = None
-    trace: str = ""
-    channel: discord.TextChannel = None
-    user: discord.Member | discord.User = None
-    guild: discord.Guild = None
+    func: Function = None
 
 
     def __init__(self, func: Function) -> None:
         self.view = discord.ui.View(timeout=None)
-        self.trace = func.execution_path
-        self.channel = func.channel
-        self.guild = func.guild
-        self.user = func.user
+        self.func = func
     
     def is_valid(self) -> bool:
         return len(self.view.children) > 0
@@ -969,7 +1002,7 @@ class VeiwGenerator:
 
     def add_select(self, data: dict | list, trace: str = "") -> None:
         select = discord.ui.Select()
-        if not trace: trace = self.trace
+        if not trace: trace = self.func.execution_path
 
         if isinstance(data, list): data = {"options": data}
         if not isinstance(data, dict): raise TypeError("Select must be a list of options or a dictionary.")
@@ -986,10 +1019,14 @@ class VeiwGenerator:
 
             args = {}
             for key in ["label", "value", "description", "emoji", "default"]:
-                if key in option: args[key] = option[key]
+                if key not in option: continue
+                value = option[key]
+                if key == "default" and isinstance(value, str):
+                    value = self.func.evaluate(value, **args)
+                args[key] = value
 
             if "emoji" in args:
-                args["emoji"] = Function(guild=self.guild).get_emoji(args["emoji"])
+                args["emoji"] = self.func.get_emoji(args["emoji"])
             select.add_option(**args)
         
         for param in ["placeholder", "min values", "max values"]:
@@ -1004,12 +1041,43 @@ class VeiwGenerator:
             if alt_param == "max_values": value = min(value, len(data["options"]))
             setattr(select, alt_param, value)
         
-        interaction = Interaction(select, data, trace)
+        interaction = Interaction(select, data, trace, self.func)
         select.callback = interaction.interact
         interactions.append(interaction)
 
         self.view.add_item(select)
 
+
+    def add_button(self, data: dict, trace: str = "") -> None:
+        button = discord.ui.Button()
+        if not trace: trace = self.func.execution_path
+
+        if not isinstance(data, dict): raise TypeError("Button must be a dictionary.")
+        if "label" not in data: raise SyntaxError(f"Button does not have a label.\nTrace: {trace}")
+
+        for param in ["disabled", "label", "row", "url", "custom id"]:
+            alt_param = param.replace(" ", "_")
+            value = None
+            if alt_param in data:
+                value = data[alt_param]
+            elif param in data:
+                value = data[param]
+            else: continue
+
+            if alt_param == "max_values": value = min(value, len(data["options"]))
+            setattr(button, alt_param, value)
+        
+        if "emoji" in data:
+            button.emoji = self.func.get_emoji(data["emoji"])
+
+        if "style" in data:
+            exec(f"button.style = discord.ButtonStyle.{data['style']}")
+        
+        interaction = Interaction(button, data, trace, self.func)
+        button.callback = interaction.interact
+        interactions.append(interaction)
+
+        self.view.add_item(button)
 
 
 
