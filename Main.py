@@ -294,6 +294,7 @@ class Function:
             case "send_message": self.__class__ = FunctionSendMessage
             case "response": self.__class__ = FunctionResponseMessage
             case "wait": self.__class__ = FunctionWait
+            case "condition": self.__class__ = FunctionCondition
             case _: return False
         return True
 
@@ -476,6 +477,13 @@ class Function:
         if self.channel: self.channel = await self.get_channel(self.channel.id)
         if self.user: self.user = await self.get_user(self.user.id)
 
+
+class FunctionCondition(Function):
+    async def execute(self) -> bool:
+        await super().execute()
+        code = self.evaluate_condition(self.raw_function[self.function_name])
+        await run_code("do", self.channel, self.user, self.guild, {"do": code}, self.execution_path + " -> ", self.additional_variables)
+        
 
 
 # Abstract
@@ -791,6 +799,9 @@ class FunctionMessage(Function):
                 inline=field.get("inline", False)
             )
         
+        if "thumbnail" in data:
+            new_embed.set_thumbnail(url=data["thumbnail"])
+
         footer = data.get("footer")
         if not footer: return new_embed
 
