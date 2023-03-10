@@ -1,4 +1,4 @@
-import discord, os, glob, re, json
+import discord, os, glob, re, json, logging
 from typing import Any
 from discord.ext import tasks
 from dotenv import load_dotenv
@@ -7,15 +7,23 @@ from datetime import datetime, timedelta, timezone
 import emoji as emojilib
 
 
+logging.basicConfig(filename="bot.log", encoding="utf-8", format="%(asctime)s - %(levelname)s: %(message)s", level=logging.DEBUG)
+logging.info("Startup")
 
-def utcnow() -> datetime: return datetime.now(timezone.utc)
+
+def utcnow() -> datetime:
+    logging.debug("Retreived UTC time")
+    return datetime.now(timezone.utc)
 
 def format_timedelta(td: timedelta, smallest_unit="s") -> str:
+    result = str(td)
     match smallest_unit:
-        case "s": return re.sub(r"\.\d+", "", str(td))
-        case "m": return re.sub(r":\d+\.\d+", "", str(td))
-        case "h": return re.sub(r":\d+:\d+\.\d+", "", str(td))
-    return str(td)
+        case "s": result = re.sub(r"\.\d+", "", str(td))
+        case "m": result = re.sub(r":\d+\.\d+", "", str(td))
+        case "h": result = re.sub(r":\d+:\d+\.\d+", "", str(td))
+    logging.debug("Converted timedelta to string with '%s' as the smallest unit: %s", smallest_unit, result)
+    return result
+
 
 def string_to_timedelta(string: str) -> timedelta:
     weeks = re.findall(r"(\d+) ?w(?:eeks?)?", string, re.IGNORECASE)
@@ -30,7 +38,7 @@ def string_to_timedelta(string: str) -> timedelta:
     m = int(minutes[0]) if minutes else 0
     s = int(seconds[0]) if seconds else 0
     
-    return timedelta(
+    result = timedelta(
         weeks=w,
         days=d,
         hours=h,
@@ -38,10 +46,16 @@ def string_to_timedelta(string: str) -> timedelta:
         seconds=s
     )
 
+    logging.debug("Converted string to timedelta: '%s' -> %s", string, result)
+    return result
+
 # https://discord.com/developers/docs/reference#message-formatting-timestamp-styles
 def timestamp(dt: datetime, mode: str = "") -> str:
-    if not mode: return f"<t:{int(dt.timestamp())}>"
-    return f"<t:{int(dt.timestamp())}:{mode}>"
+    result: str = ""
+    if not mode: result = f"<t:{int(dt.timestamp())}>"
+    else: result = f"<t:{int(dt.timestamp())}:{mode}>"
+    logging.debug("Converted datetime to timestamp: %s -> %s", dt, result)
+    return result
 
 # ---------- Load Token ---------- #
 
@@ -59,24 +73,38 @@ yaml_files: list[str] = []
 for pattern in ["*.yml", "*.yaml"]:
     yaml_files += glob.glob(pattern)
 
-if not yaml_files:
+if yaml_files:
+    logging.info("Found the following YAML files: %s", yaml_files)
+else:
+    logging.critical("Could not find any YAML files")
     raise FileNotFoundError("Could not find any YAML files.")
 
 for path in yaml_files:
+    logging.info("Trying to load: %s", path)
     try:
         with open(path, encoding="utf8") as f:
             yaml = YAML(typ="safe").load(f)
     except constructor.DuplicateKeyError: # Top notch error handling
+        logging.critical("YAML contains duplicate keys")
         raise constructor.DuplicateKeyError("Duplicate keys are not supported.")
-
-    if yaml: break
+    except Exception as e:
+        logging.critical(e)
+        raise e
+    
+    if yaml:
+        logging.info("Loaded: %s", path)
+        break
 
 # I feel like errors have so much more to offer while Im just using them to print a message...
-if not yaml: raise SyntaxError("YAML file is empty.")
-if not isinstance(yaml, dict): raise TypeError("YAML is not a dictionary.")
+if not yaml:
+    logging.critical("YAML is empty")
+    raise SyntaxError("YAML file is empty.")
+if not isinstance(yaml, dict):
+    logging.critical("YAML is not a dictionary")
+    raise TypeError("YAML is not a dictionary.")
 
 print(f"Executing {path}")
-
+logging.info("Executing: %s", path)
 
 
 
@@ -88,12 +116,22 @@ print(f"Executing {path}")
 intents = discord.Intents.default()
 
 if "intents" in yaml:
-    if not isinstance(yaml["intents"], list): raise TypeError("Intents must be a list of strings.")
+    logging.info("Setting intents")
+    if not isinstance(yaml["intents"], list):
+        logging.critical("Intents are of type '%s' and not 'list'", type(yaml["intents"]))
+        raise TypeError("Intents must be a list of strings.")
 
     for intent in yaml["intents"]:
-        if not isinstance(intent, str): raise TypeError("Intents must be string values")
-        if not hasattr(intents, intent): raise ValueError(f"'{intent}' is not a valid intent.")
+        logging.info("Enabling intent: %s", intent)
+        if not isinstance(intent, str):
+            logging.critical("Intent is not string")
+            raise TypeError("Intents must be string values")
+        if not hasattr(intents, intent):
+            logging.critical("Intent is invalid")
+            raise ValueError(f"'{intent}' is not a valid intent.")
         exec(f"intents.{intent} = True")
+    logging.info("Finished setting intents")
+else: logging.info("YAML does not contain intents")
 
 client = discord.Client(intents=intents)
 
@@ -107,14 +145,20 @@ client = discord.Client(intents=intents)
 yaml_variables: list[str] = []
 
 if "variables" in yaml:
-   for var in yaml["variables"]:
-       if not isinstance(var, str): raise SyntaxError("Variable names must be string.")
-       if not re.fullmatch(r"[A-z_][A-z0-9_ ]*", var): raise SyntaxError(f"'{var}' is not a valid variable name.")
-       var_name = var.replace(" ", "_")
-       if var_name in yaml_variables: raise NameError(f"Could not define '{var}' since '{var_name}' already exists.")
-       yaml_variables.append(var_name)
-       exec(f'{var_name} = {repr(yaml["variables"][var])}')
-
+    logging.info("Assigning variables")
+    for var in yaml["variables"]:
+        logging.info("Assiging: %s", var)
+        if not isinstance(var, str):
+            logging.critical("Variable is not a string")
+            raise SyntaxError("Variable names must be string.")
+        if not re.fullmatch(r"[A-z_][A-z0-9_]*", var):
+            logging.critical("Invalid variable name")
+            raise SyntaxError(f"'{var}' is not a valid variable name. It can only contain letters, numbers and underscores. It cannot start with a number.")
+        
+        yaml_variables.append(var)
+        logging.info("Value: %s", repr(yaml["variables"][var]))
+        exec(f'{var} = {repr(yaml["variables"][var])}')
+else: logging.info("YAML does not contain variables")
 
 
 
@@ -125,6 +169,7 @@ if "variables" in yaml:
 # Guild has slots which makes it hard to extend, hopefully this works
 class Guild(discord.Guild):
     def __init__(self, guild: discord.Guild) -> None:
+        logging.debug("Converting discord.Guild to Guild: %s", guild)
         if not guild: return
         self.role_count = len(guild.roles)
         self.category_count = len(guild.categories)
@@ -157,37 +202,71 @@ class SaveHandler:
     }
 
     def __init__(self, path: str) -> None:
+        logging.info("Initialising the SaveHandler")
         self.path = path
+        logging.info("Trying to load: %s", path)
         try:
             with open(path) as f:
                 self.data = json.load(f)
-        except: self.save()
+        except Exception as e:
+            logging.warn("Loading failed: %s", e)
+            self.save()
 
     def save(self) -> None:
+        logging.info("Saving: %s", self.path)
+        logging.debug("Data: %s", self.data)
         with open(self.path, "w") as f:
             json.dump(self.data, f, indent=4)
+        logging.debug("Saved")
     
     # I cant specify that func should be a Function because pyton has no forward declaration :(
     async def get_message(self, func) -> discord.Message:
-        if "messages" not in self.data: return None
-        if func.execution_path not in self.data["messages"]: return None
+        logging.info("Retreiving message: %s", func.execution_path if func else "None")
+        if not func:
+            logging.error("Invalid function")
+            return None
+        if "messages" not in self.data:
+            logging.warn("Does not contain any messages")
+            return None
+        if func.execution_path not in self.data["messages"]: 
+            logging.warn("Does not contain message: %s", func.execution_path)
+            return None
         msg = self.data["messages"][func.execution_path]
-        if "channel" not in msg: return None
-        if "id" not in msg: return None
+        logging.debug("Found message: %s", msg)
+        if "channel" not in msg:
+            logging.error("Message does not contain a channel")
+            return None
+        if "id" not in msg:
+            logging.error("Message does not contain an ID")
+            return None
 
         channel = await func.get_channel(msg["channel"])
-        if not channel: return None
+        if not channel:
+            logging.error("Could not find channel: %s", msg["channel"])
+            return None
 
         try:
             message = await channel.fetch_message(msg["id"])
-        except discord.NotFound: return None
+        except discord.NotFound:
+            logging.error("Could not find message: %s", msg["id"])
+            return None
+        except Exception as e: logging.error(e)
         return message
 
     def save_msg(self, func) -> None:
-        if not func: raise Exception("Could not save message.")
-        if not hasattr(func, "msg"): raise Exception(f"Could not save message.\nTrace: {func.execution_path}")
-        if not func.msg: raise Exception(f"Could not save message.\nTrace: {func.execution_path}")
-        if "messages" not in self.data: self.data["messages"] = {}
+        logging.info("Saving message: %s", func.execution_path if func else "None")
+        if not func:
+            logging.error("Invalid function")
+            return
+        if not hasattr(func, "msg"):
+            logging.error("Function does not have message")
+            return
+        if not func.msg:
+            logging.error("Invalid message")
+            return            
+        if "messages" not in self.data:
+            logging.debug("Created a dictionary for messages in data")
+            self.data["messages"] = {}
         self.data["messages"][func.execution_path] = {
             "channel": func.msg.channel.id,
             "id": func.msg.id
@@ -195,11 +274,22 @@ class SaveHandler:
         self.save()
 
     def save_timer(self, func) -> None:
-        if not func: raise Exception("Could not save timer.")
-        if not hasattr(func, "time"): raise Exception(f"Could not save timer.\nTrace: {func.execution_path}")
-        if not hasattr(func, "do"): raise Exception(f"Could not save timer.\nTrace: {func.execution_path}")
-        if not func.time: raise Exception(f"Could not save timer.\nTrace: {func.execution_path}")
-        if "timers" not in self.data: self.data["timers"] = []
+        logging.info("Saving timer: %s", func.execution_path if func else "None")
+        if not func:
+            logging.error("Invalid function")
+            return
+        if not hasattr(func, "time"):
+            logging.error("Function does not have time")
+            return
+        if not hasattr(func, "do"):
+            logging.error("Timer does not have functions")
+            return
+        if not func.time:
+            logging.error("Invalid time")
+            return
+        if "timers" not in self.data:
+            logging.debug("Created a list for timers in data")
+            self.data["timers"] = []
 
         self.data["timers"].append({
             "func": func.execution_path,
@@ -213,21 +303,28 @@ class SaveHandler:
         self.save()
     
     def remove_timer_by_path(self, execution_path: str) -> None:
+        logging.log("Removing timer: %s", execution_path)
+        found = False
         for x in self.get_timers():
             if x["func"] == execution_path:
+                found = True
                 self.data["timers"].remove(x)
+                logging.info("Removed timer")
                 break
-        self.save()
+        if found: self.save()
+        else: logging.warn("Could not find timer")
 
     def remove_timers(self, timers: list[dict]) -> None:
+        logging.log("Removing timers: %s", [x.get("func") for x in timers])
         for x in timers:
             self.data["timers"].remove(x)
         self.save()
 
 
     def get_timers(self) -> list[dict]:
-        return self.data.get("timers", [])
-
+        value = self.data.get("timers", [])
+        logging.debug("Retreiving timers: %s", value)
+        return value
 
 
 
@@ -265,6 +362,11 @@ class Function:
     additional_variables = {}
 
     def __init__(self, raw_function: dict = None, channel: discord.TextChannel = None, user: discord.Member | discord.User = None, guild: discord.Guild = None, execution_path: str = "") -> None:
+        logging.info("Initialising function: %s", execution_path)
+        logging.debug("Raw function: %s", raw_function)
+        logging.debug("Channel: %s", channel)
+        logging.debug("User: %s", user)
+        logging.debug("Guild: %s", guild)
         self.channel = None
         self.user = None
         self.guild = None
@@ -273,18 +375,25 @@ class Function:
         self.execution_path = ""
         self.additional_variables = {}
         
-        if not raw_function: return
-        if not isinstance(raw_function, dict): raise TypeError(f"Function must be dictionary.\n{raw_function}")
+        if not raw_function:
+            logging.error("Invalid Function")
+            return
+        if not isinstance(raw_function, dict):
+            logging.error("Function is of type '%s' and 'dict'", type(raw_function))
+            return
         self.channel = channel
         self.user = user
         if guild: self.guild = Guild(guild)
-        elif isinstance(user, discord.Member): self.guild = Guild(user.guild)
+        elif isinstance(user, discord.Member):
+            self.guild = Guild(user.guild)
+            logging.debug("Assigned guild through user: %s", user.guild)
         self.raw_function = raw_function
         self.function_name = list(raw_function.keys())[0]
         self.execution_path = execution_path + " -> " + self.function_name
         self.assign_type(self.function_name)
 
     def assign_type(self, function_name: str) -> bool:
+        logging.debug("Assigning function type: %s", function_name)
         match function_name.lower().replace(" ", "_"):
             case "add_role" | "add_roles": self.__class__ = FunctionAddRoles
             case "remove_role" | "remove_roles": self.__class__ = FunctionRemoveRoles
@@ -295,34 +404,49 @@ class Function:
             case "response": self.__class__ = FunctionResponseMessage
             case "wait": self.__class__ = FunctionWait
             case "condition": self.__class__ = FunctionCondition
-            case _: return False
+            case _:
+                logging.error("Invalid function: %s", function_name)
+                return False
+        logging.debug("Assigned type: %s", self.__class__)
         return True
 
     # virtual
-    async def find_arguments(self, arguments) -> None: pass
+    async def find_arguments(self, arguments) -> None:
+        logging.debug("Assigning arguments: %s", arguments)
 
     # virtual
     async def execute(self) -> bool:
+        logging.info("Executing: %s", self.execution_path)
         await self.find_arguments(self.raw_function[self.function_name])
         return False
 
     async def get_user(self, id: int | str) -> discord.Member | discord.User:
-        if not id: return None
+        logging.info("Rerieving user: %s", id)
+        if not id:
+            logging.warn("No ID")
+            return None
 
         if isinstance(id, str):
             var = id.replace(" ", "_")
             if var in yaml_variables:
-                return self.get_user(eval(var))
+                logging.debug("Resolving variable")
+                return await self.get_user(eval(var))
             if id.startswith("@"): id = id[1:]
 
         if self.guild:
+            logging.debug("Checking guild members")
             if isinstance(id, int):
                 user = self.guild.get_member(id)
                 if not user: user = await self.guild.fetch_member(id)
                 return user
             
-            if not isinstance(id, str): raise TypeError(f"User must be an integer ID, a username or a variable pointing to one of the former.\nTrace: {self.execution_path}")
-            if id.lower() == "user": return self.user
+            elif not isinstance(id, str):
+                logging.error("User is not int or string")
+                return None
+            
+            if id.lower() == "user":
+                logging.debug("Returning self.user")
+                return self.user
 
             return self.guild.get_member_named(id)
 
@@ -332,7 +456,9 @@ class Function:
                 if not user: user = await client.fetch_user(id)
                 return user
             
-            if not isinstance(id, str): raise TypeError(f"User must be an integer ID, a username or a variable pointing to one of the former.\nTrace: {self.execution_path}")
+            elif not isinstance(id, str):
+                logging.error("User is not int or string")
+                return
 
             for user in client.users:
                 if str(user) == id: return user
@@ -344,28 +470,59 @@ class Function:
                 if user.nick == id: return user
 
     def get_role(self, id: int | str) -> discord.Role:
-        if not id: return None
+        logging.info("Rerieving role: %s", id)
+        if not id:
+            logging.warn("No ID")
+            return None
 
         if isinstance(id, str):
             var = id.replace(" ", "_")
             if var in yaml_variables:
+                logging.debug("Resolving variable")
                 return self.get_role(eval(var))
             if id.startswith("@"): id = id[1:]
         
-        if not self.guild and self.user:
-            for guild in self.user.mutual_guilds:
-                if isinstance(id, int): return guild.get_role(id)
-                for role in guild.roles:
-                    if role.name == id: return role
-            return None
-        
-        if isinstance(id, int): return self.guild.get_role(id)
-        
+        if not self.guild:
+            logging.warn("Does not have guild")
+            if self.user:
+                logging.debug("Checking mutual guilds")
+                for guild in self.user.mutual_guilds:
+                    if isinstance(id, int):
+                        role = guild.get_role(id)
+                        if role:
+                            logging.debug("Found role")
+                            return role
+                    for role in guild.roles:
+                        if role.name == id:
+                            logging.debug("Found role")
+                            return role
+                
+                logging.warn("Could not find role")
+                return None
+            else:
+                logging.warn("Does not have guild or user")
+                return None
+            
+
+        if isinstance(id, int):
+            role = self.guild.get_role(id)
+            if role: logging.debug("Found role")
+            else: logging.warn("Could not find role")
+            return role
+
         for role in self.guild.roles:
-            if role.name == id: return role
+            if role.name == id:
+                logging.debug("Found role")
+                return role
+
+        logging.warn("Could not find role")
+        return None
 
     async def get_channel(self, id: int | str):
-        if not id: return None
+        logging.info("Rerieving channel: %s", id)
+        if not id:
+            logging.warn("No ID")
+            return None
 
         if isinstance(id, int):
             channel = client.get_channel(id)
@@ -374,27 +531,48 @@ class Function:
             return channel
 
         if not isinstance(id, str):
-            raise TypeError(f"Channel must be an integer ID, a channel name or a variable pointing to one of the former.\nTrace: {self.execution_path}")
+            logging.error("Channel is not int or string")
+            return None
+
+        var = id.replace(" ", "_")
+        if var in yaml_variables:
+            logging.debug("Resolving variable")
+            return await self.get_channel(eval(var))
 
         if id.startswith("#"): id = id[1:]
 
         for channel in client.get_all_channels():
             if channel.name == id: return channel
-            
+        
+        logging.warn("Could not find channel")
         return None
 
     def get_colour(self, id: int | str) -> int:
-        if not id: return None
-        if isinstance(id, int): return id
-        if id in yaml_variables: return self.get_colour(eval(id))
+        logging.info("Rerieving colour: %s", id)
+        if not id:
+            logging.warn("No ID")
+            return None
+        if isinstance(id, int):
+            logging.debug("Colour is int, returning as is")
+            return id
+        if id in yaml_variables:
+            logging.debug("Resolving variable")
+            return self.get_colour(eval(id))
+        
+        logging.warn("Could not find colour")
         return None
 
     def get_emoji(self, id: int | str) -> discord.Emoji | str:
-        if not id: return None
+        logging.info("Rerieving emoji: %s", id)
+        if not id:
+            logging.warn("No ID")
+            return None
         emoji = None
 
         if isinstance(id, str):
-            if emojilib.is_emoji(id): return id
+            if emojilib.is_emoji(id):
+                logging.debug("Emoji is native, returning as is")
+                return id
             name = re.match(r":(.+):", id)
             if name: id = name.group(1)
 
@@ -410,29 +588,43 @@ class Function:
             else: break
             if emoji: return emoji
 
+        logging.warn("Could not find emoji")
+        return None
 
 
     async def get_server(self, id: int | str) -> Guild:
-        if not id: return None
+        logging.info("Rerieving server: %s", id)
+        if not id:
+            logging.warn("No ID")
+            return None
 
         if isinstance(id, int):
             server = client.get_guild(id)
             if server: return Guild(server)
             server = await client.fetch_guild(id)
             if server: return Guild(server)
+            logging.warn("Could not find server")
             return None
 
-        if not isinstance(id, str): raise TypeError(f"Guild must be an integer ID, a guild name or a variable pointing to one of the former.\nTrace: {self.execution_path}")
-
-        if id in yaml_variables: return await self.get_server(eval(id))
+        if not isinstance(id, str):
+            logging.warn("Server is not int or string")
+            return None
+        
+        if id in yaml_variables:
+            logging.debug("Resolving variable")
+            return await self.get_server(eval(id))
 
         for server in client.guilds:
             if server.name == id: return Guild(server)
         
+        logging.warn("Could not find server")
         return None
 
     def evaluate(self, _string: str, **kwargs) -> Any:
-        if not _string: return _string
+        logging.info("Evaluating: %s", _string)
+        if not _string:
+            logging.warn("Nothing to evaluate")
+            return _string
 
         for _key in self.additional_variables:
             exec(f"{_key} = self.additional_variables[{repr(_key)}]")
@@ -445,37 +637,65 @@ class Function:
             exec(f"{_key} = {repr(kwargs[_key])}")
 
         try:
-            return eval(_string)
-        except Exception as e: raise type(e)(f"{e}\nTrace: {self.execution_path}\n\n{_string}") from e
+            result = eval(_string)
+            logging.info("Evaluated: %s", result)
+            return result
+        except Exception as e:
+            logging.error(e)
+            return None
 
     def evaluate_string(self, _string: str) -> str:
-        if not _string: return _string
+        logging.info("Evaluating as string: %s", _string)
+        if not _string:
+            logging.warn("Nothing to evaluate")
+            return _string
 
         for _dictionary in [self.__dict__, self.additional_variables]:
             for _key in _dictionary:
                 exec(f"{_key} = self.{_key}")
         
         try:
-            return eval(f"f{repr(_string)}")
-        except Exception as e: raise type(e)(f"{e}\nTrace: {self.execution_path}\n\n{_string}") from e
+            result = eval(f"f{repr(_string)}")
+            logging.info("Evaluated: %s", result)
+            return result
+        except Exception as e:
+            logging.error(e)
+            return ""
 
     def evaluate_condition(self, condition: dict) -> dict:
+        logging.info("Evaluating condition: %s", condition.get("if"))
         if self.evaluate(condition.get("if")):
+            logging.info("True")
+            logging.debug("Data: %s", condition.get("do"))
             return condition.get("do", {"?":{}})
+        logging.info("False")
+        logging.debug("Data: %s", condition.get("else"))
         return condition.get("else", {"?":{}})
 
     async def aexec(self, code: str) -> None:
-        # Make an async function with the code and `exec` it
-        exec(
-            'async def __exec(self):\n' +
-            ''.join(f'\n {l}' for l in code.split('\n'))
-        )
-        await locals()["__exec"](self)
+        logging.info("Async execution: %s", code)
+        try:
+            # Make an async function with the code and `exec` it
+            exec(
+                'async def __exec(self):\n' +
+                ''.join(f'\n {l}' for l in code.split('\n'))
+            )
+            await locals()["__exec"](self)
+        except Exception as e:
+            logging.error(e)
+
 
     async def refresh(self) -> None:
-        if self.guild: self.guild = await self.get_server(self.guild.id)
-        if self.channel: self.channel = await self.get_channel(self.channel.id)
-        if self.user: self.user = await self.get_user(self.user.id)
+        logging.info("Refresing function: %s", self.execution_path)
+        if self.guild:
+            logging.debug("Refresing guild: %s", self.guild)
+            self.guild = await self.get_server(self.guild.id)
+        if self.channel:
+            logging.debug("Refresing channel: %s", self.channel)
+            self.channel = await self.get_channel(self.channel.id)
+        if self.user:
+            logging.debug("Refresing user: %s", self.user)
+            self.user = await self.get_user(self.user.id)
 
 
 class FunctionCondition(Function):
@@ -946,6 +1166,7 @@ class Interaction:
     func = None
 
     def __init__(self, item, code: dict, trace: str, func = None) -> None:
+        logging.info("Listening to interaction: %s", trace)
         self.execution_path = trace
         self.code = code
         self.item = item
@@ -953,10 +1174,14 @@ class Interaction:
 
 
     async def interact(self, interaction: discord.Interaction) -> None:
+        logging.info("Interaction: %s", self.execution_path)
+        logging.debug("User: %s", interaction.user)
         
         functions = self.code.get("on interaction", [])
         if not functions: functions = self.code.get("on_interaction", [])
-        if not isinstance(functions, list): raise TypeError(f"On interaction must be a list of functions.\nTrace: {self.execution_path}")
+        if not isinstance(functions, list):
+            logging.error("On interaction is of type '%s' and not 'list'", type(functions))
+            return
 
         if self.func: await self.func.refresh()
 
@@ -968,7 +1193,9 @@ class Interaction:
                     break
             if defer: break
         
-        if defer: await interaction.response.defer()
+        if defer:
+            logging.info("Response is deferred")
+            await interaction.response.defer()
         
         args = {}
         for obj in [self.item, interaction]:
@@ -986,12 +1213,23 @@ class Interaction:
             args
         )
 
-        if interaction.response.is_done() or interaction.is_expired(): return
+
+        if interaction.response.is_done():
+            logging.debug("Interaction was responded to")
+            return
+
+
+        if interaction.is_expired():
+            logging.error("Interaction expired")
+            return
         
         if isinstance(self.func, FunctionMessage) and self.func.has_condition:
+            logging.info("Responding to interaction by editing the message")
             await self.func.find_arguments(self.func.raw_function[self.func.function_name])
             await interaction.response.edit_message(**self.func.get_edit_args())
-        else: await interaction.response.send_message("Done.", ephemeral=True)
+        else:
+            logging.info("Interaction was not responded to, sending default response")
+            await interaction.response.send_message("Done.", ephemeral=True)
 
 
 
@@ -1014,29 +1252,40 @@ class VeiwGenerator:
     def add_select(self, data: dict | list, trace: str = "") -> None:
         select = discord.ui.Select()
         if not trace: trace = self.func.execution_path
+        logging.info("Adding select: %s", trace)
 
         if isinstance(data, list): data = {"options": data}
-        if not isinstance(data, dict): raise TypeError("Select must be a list of options or a dictionary.")
-        if "options" not in data: raise SyntaxError(f"Select does not have any options.\nTrace: {trace}")
-        if not isinstance(data["options"], list): raise TypeError(f"Options must be a list of options.\nTrace: {trace}")
+        if not isinstance(data, dict):
+            logging.error("Select is not a list of options or a dictionary")
+            return
+        if "options" not in data:
+            logging.error("Select does not have options")
+            return
+        if not isinstance(data["options"], list):
+            logging.error("Options is of type '%s' and not 'list'", type(data["options"]))
+            return
 
         for index, option in enumerate(data["options"]):
             if isinstance(option, str):
+                logging.debug("Adding option: %s", option)
                 select.add_option(label=option)
                 continue
 
             if not isinstance(option, dict):
-                raise TypeError(f"Select option must be dictionary or string.\nTrace: {trace} -> option {index}")
+                logging.error("Option is not string or dict: %s", option)
+                continue
 
             args = {}
             for key in ["label", "value", "description", "emoji", "default"]:
                 if key not in option: continue
+                logging.debug("Adding '%s' to option", key)
                 value = option[key]
                 if key == "default" and isinstance(value, str):
                     value = self.func.evaluate(value, **args)
                 args[key] = value
 
             if "emoji" in args:
+                logging.debug("Resolving emoji")
                 args["emoji"] = self.func.get_emoji(args["emoji"])
             select.add_option(**args)
         
@@ -1050,6 +1299,7 @@ class VeiwGenerator:
             else: continue
 
             if alt_param == "max_values": value = min(value, len(data["options"]))
+            logging.debug("Setting '%s': %s", alt_param, value)
             setattr(select, alt_param, value)
         
         interaction = Interaction(select, data, trace, self.func)
@@ -1062,9 +1312,14 @@ class VeiwGenerator:
     def add_button(self, data: dict, trace: str = "") -> None:
         button = discord.ui.Button()
         if not trace: trace = self.func.execution_path
+        logging.info("Adding button: %s", trace)
 
-        if not isinstance(data, dict): raise TypeError("Button must be a dictionary.")
-        if "label" not in data: raise SyntaxError(f"Button does not have a label.\nTrace: {trace}")
+        if not isinstance(data, dict):
+            logging.error("Button is not a dictionary")
+            return
+        if "label" not in data:
+            logging.error("Button does not have a label")
+            return
 
         for param in ["disabled", "label", "row", "url", "custom id"]:
             alt_param = param.replace(" ", "_")
@@ -1075,14 +1330,15 @@ class VeiwGenerator:
                 value = data[param]
             else: continue
 
-            if alt_param == "max_values": value = min(value, len(data["options"]))
+            logging.debug("Setting '%s': %s", alt_param, value)
             setattr(button, alt_param, value)
-        
-        if "emoji" in data:
-            button.emoji = self.func.get_emoji(data["emoji"])
 
         if "style" in data:
-            exec(f"button.style = discord.ButtonStyle.{data['style']}")
+            logging.debug("Retrieving style: %s", data["style"])
+            try:
+                exec(f"button.style = discord.ButtonStyle.{data['style']}")
+            except Exception as e:
+                logging.error(e)
         
         interaction = Interaction(button, data, trace, self.func)
         button.callback = interaction.interact
@@ -1130,10 +1386,12 @@ async def run_code(code_path: str, channel: discord.TextChannel = None, user: di
 
 
 async def check_timers() -> None:
+    logging.info("Checking timers")
     executed_timers: list[dict] = []
-    
     for timer in save_data.get_timers():
         if datetime.fromisoformat(timer["time"]) <= utcnow():
+            logging.info("Found expired timer: %s", timer["func"])
+            logging.debug("Data: %s", timer)
             executed_timers.append(timer)
 
             func = Function()
@@ -1151,25 +1409,35 @@ async def check_timers() -> None:
 
 @client.event
 async def on_ready() -> None:
+    if "on connected" not in yaml and "on_connected" not in yaml: return
+    logging.info("Ready")
     await run_code("on connected")
     start_loop()
 
 @client.event
 async def on_message(message: discord.Message) -> None:
+    if "on message" not in yaml and "on_message" not in yaml: return
     if message.author == client.user: return
+    logging.info("Message received from: %s", message.author)
+    logging.debug("Message content is not logged for privacy reasons")
     await run_code("on message", message.channel, message.author, message.channel.guild)
 
 @client.event
 async def on_member_join(member: discord.Member) -> None:
+    if "on user joined" not in yaml and "on_user_joined" not in yaml: return
+    logging.info("User joined '%s': %s", member.guild.name, member)
     await run_code("on user joined", None, member, member.guild)
 
 @client.event
 async def on_member_remove(member: discord.Member) -> None:
+    if "on user left" not in yaml and "on_user_left" not in yaml: return
+    logging.info("User removed from '%s': %s", member.guild.name, member)
     await run_code("on user left", None, member, member.guild)
 
 @tasks.loop(minutes=1)
 async def main_loop() -> None:
     if "loop" not in yaml: return
+    logging.info("Executing loop functions")
     await run_code("do", lookup=yaml["loop"], trace="loop -> ")
     await check_timers()
 
@@ -1179,13 +1447,30 @@ def start_loop() -> None:
 
     for key in ["time", "interval", "every", "wait", "delay"]:
         if key not in yaml["loop"]: continue
+        logging.info("Found '%s' for loop", key)
         td = string_to_timedelta(yaml["loop"][key])
         main_loop.change_interval(seconds=td.total_seconds())
+        logging.info("Changed loop interval seconds: %s", td.total_seconds())
         break
 
+    logging.info("Starting loop")
     main_loop.start()
 
 
+
+
+
+@client.event
+async def on_connect(): logging.log("Connected")
+
+@client.event
+async def on_disconnect(): logging.log("Disonnected")
+
+@client.event
+async def on_resumed(): logging.log("Resumed")
+
+
+logging.info("Starting client")
 client.run(TOKEN)
 
 
